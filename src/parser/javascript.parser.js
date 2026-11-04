@@ -87,8 +87,103 @@ const isExportsObject = (node) => {
     return node?.type === "Identifier" && node.name === "exports";
 };
 
+const getExportType = (node, scope) => {
+    if (!node) {
+        return "unknown";
+    }
 
-const extractObjectExportNames = (objectExpression) => {
+    if (node.type === "Identifier") {
+        const binding = scope?.getBinding(node.name);
+
+        if (!binding) {
+            return "unknown";
+        }
+
+        const bindingNode = binding.path.node;
+
+        if (
+            bindingNode.type === "FunctionDeclaration" ||
+            bindingNode.type === "ObjectMethod"
+        ) {
+            return "function";
+        }
+
+        if (bindingNode.type === "ClassDeclaration") {
+            return "class";
+        }
+
+        if (bindingNode.type === "VariableDeclarator") {
+            return getExportType(bindingNode.init, binding.path.scope);
+        }
+
+        return "unknown";
+    }
+
+    if (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression"
+    ) {
+        return "function";
+    }
+
+    if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+        return "class";
+    }
+
+    if (node.type === "VariableDeclarator") {
+        return getExportType(node.init, scope);
+    }
+
+    return "variable";
+};
+
+const getLocalName = (node) => {
+    if (node?.type === "Identifier") {
+        return node.name;
+    }
+
+    if (
+        node?.type === "FunctionExpression" ||
+        node?.type === "FunctionDeclaration" ||
+        node?.type === "ClassExpression" ||
+        node?.type === "ClassDeclaration"
+    ) {
+        return node.id?.name ?? null;
+    }
+
+    return null;
+};
+
+const createExport = (name, value, scope) => {
+    return {
+        name,
+        localName: getLocalName(value),
+        type: getExportType(value, scope)
+    };
+};
+
+const getObjectPropertyName = (property) => {
+    if (property.computed) {
+        if (property.key.type === "StringLiteral") {
+            return property.key.value;
+        }
+
+        return null;
+    }
+
+    if (property.key.type === "Identifier") {
+        return property.key.name;
+    }
+
+    if (property.key.type === "StringLiteral") {
+        return property.key.value;
+    }
+
+    return null;
+};
+
+const extractObjectExports = (objectExpression, scope) => {
     if (objectExpression?.type !== "ObjectExpression") {
         return [];
     }
@@ -98,26 +193,25 @@ const extractObjectExportNames = (objectExpression) => {
             return [];
         }
 
-        if (property.computed) {
-            if (property.key.type === "StringLiteral") {
-                return [property.key.value];
-            }
+        const name = getObjectPropertyName(property);
 
+        if (!name) {
             return [];
         }
 
-        if (property.key.type === "Identifier") {
-            return [property.key.name];
+        if (property.type === "ObjectMethod") {
+            return [{
+                name,
+                localName: null,
+                type: "function"
+            }];
         }
 
-        if (property.key.type === "StringLiteral") {
-            return [property.key.value];
-        }
-
-        return [];
+        return [
+            createExport(name, property.value, scope)
+        ];
     });
 };
-
 
 const getCommonJSExportName = (node) => {
     if (isModuleExports(node)) {
@@ -140,7 +234,6 @@ const getCommonJSExportName = (node) => {
 
     return null;
 };
-
 
 export const parseJavaScript = (sourceCode) => {
     const ast = parse(sourceCode, {
@@ -232,25 +325,68 @@ export const parseJavaScript = (sourceCode) => {
                 if (node.declaration.type === "VariableDeclaration") {
                     node.declaration.declarations.forEach((declaration) => {
                         if (declaration.id.type === "Identifier") {
-                            result.exports.push(declaration.id.name);
+                            result.exports.push(
+                                createExport(
+                                    declaration.id.name,
+                                    {
+                                        type: "Identifier",
+                                        name: declaration.id.name
+                                    },
+                                    path.scope
+                                )
+                            );
                         }
                     });
                 } else if (node.declaration.id) {
-                    result.exports.push(node.declaration.id.name);
+                    result.exports.push(
+                        createExport(
+                            node.declaration.id.name,
+                            node.declaration,
+                            path.scope
+                        )
+                    );
                 }
             }
 
             node.specifiers.forEach((specifier) => {
-                result.exports.push(specifier.exported.name);
+                const name = specifier.exported.name ?? specifier.exported.value;
+                const localName = specifier.local.name ?? specifier.local.value;
+
+                if (node.source) {
+                    result.exports.push({
+                        name,
+                        localName: null,
+                        type: "unknown",
+                        source: node.source.value,
+                        importedName: localName
+                    });
+
+                    return;
+                }
+
+                const binding = path.scope.getBinding(localName);
+
+                result.exports.push({
+                    name,
+                    localName,
+                    type: binding
+                        ? getExportType(
+                            { type: "Identifier", name: localName },
+                            path.scope
+                        )
+                        : "unknown"
+                });
             });
         },
 
-        ExportDefaultDeclaration() {
-            result.exports.push("default");
+        ExportDefaultDeclaration(path) {
+            const declaration = path.node.declaration;
+
+            result.exports.push(
+                createExport("default", declaration, path.scope)
+            );
         },
 
-        
-        
         AssignmentExpression(path) {
             const node = path.node;
 
@@ -261,28 +397,38 @@ export const parseJavaScript = (sourceCode) => {
             if (isModuleExports(node.left)) {
                 if (node.right.type === "ObjectExpression") {
                     result.exports.push(
-                        ...extractObjectExportNames(node.right)
+                        ...extractObjectExports(node.right, path.scope)
                     );
 
                     return;
                 }
 
-                result.exports.push("default");
+                result.exports.push(
+                    createExport("default", node.right, path.scope)
+                );
+
                 return;
             }
 
             const exportName = getCommonJSExportName(node.left);
 
             if (exportName) {
-                result.exports.push(exportName);
+                result.exports.push(
+                    createExport(exportName, node.right, path.scope)
+                );
             }
         }
-
-
-
     });
 
-    result.exports = [...new Set(result.exports)];
+    const uniqueExports = new Map();
+
+    result.exports.forEach((item) => {
+        const key = JSON.stringify(item);
+
+        uniqueExports.set(key, item);
+    });
+
+    result.exports = [...uniqueExports.values()];
 
     return result;
 };
