@@ -2,6 +2,10 @@
 import { describe, it, expect } from "vitest";
 import { parseJavaScript } from "../../src/parser/javascript.parser.js";
 
+const getExportNames = (result) => {
+    return result.exports.map((item) => item.name);
+};
+
 describe("JavaScript Parser", () => {
     it("should detect function declarations", () => {
         const sourceCode = `
@@ -50,8 +54,22 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(sourceCode);
 
-        expect(result.exports).toContain("getUser");
-        expect(result.exports).toContain("deleteUser");
+        expect(getExportNames(result)).toEqual([
+            "getUser",
+            "deleteUser"
+        ]);
+
+        expect(result.exports[0]).toEqual({
+            name: "getUser",
+            localName: "getUser",
+            type: "function"
+        });
+
+        expect(result.exports[1]).toEqual({
+            name: "deleteUser",
+            localName: "deleteUser",
+            type: "function"
+        });
     });
 
     it("should detect default exports", () => {
@@ -62,7 +80,12 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(sourceCode);
 
-        expect(result.exports).toContain("default");
+        expect(getExportNames(result)).toContain("default");
+        expect(result.exports[0]).toEqual({
+            name: "default",
+            localName: "User",
+            type: "variable"
+        });
     });
 
     it("should detect destructured parameters", () => {
@@ -106,7 +129,15 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(sourceCode);
 
-        expect(result.exports).toContain("getUser");
+        expect(getExportNames(result)).toContain("getUser");
+
+        expect(result.exports[0]).toEqual({
+            name: "getUser",
+            localName: null,
+            type: "unknown",
+            source: "./user.service.js",
+            importedName: "getUser"
+        });
     });
 
     it("should detect nested destructured parameters", () => {
@@ -157,7 +188,14 @@ describe("JavaScript Parser", () => {
 
         expect(result.functions).toHaveLength(1);
         expect(result.functions[0].name).toBe("getUser");
-        expect(result.exports).toEqual(["getUser"]);
+
+        expect(result.exports).toEqual([
+            {
+                name: "getUser",
+                localName: "getUser",
+                type: "function"
+            }
+        ]);
     });
 
     it("should detect CommonJS require", () => {
@@ -200,7 +238,6 @@ describe("JavaScript Parser", () => {
         expect(result.imports[1].source).toBe("./auth.service");
     });
 
-    
     it("should detect module.exports", () => {
         const code = `
             const getUser = () => {};
@@ -209,7 +246,13 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("default");
+        expect(result.exports).toEqual([
+            {
+                name: "default",
+                localName: "getUser",
+                type: "function"
+            }
+        ]);
     });
 
     it("should detect exports properties", () => {
@@ -220,8 +263,13 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("getUser");
-        expect(result.exports).toContain("deleteUser");
+        expect(getExportNames(result)).toEqual([
+            "getUser",
+            "deleteUser"
+        ]);
+
+        expect(result.exports[0].type).toBe("function");
+        expect(result.exports[1].type).toBe("function");
     });
 
     it("should detect module.exports properties", () => {
@@ -232,8 +280,10 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("getUser");
-        expect(result.exports).toContain("deleteUser");
+        expect(getExportNames(result)).toEqual([
+            "getUser",
+            "deleteUser"
+        ]);
     });
 
     it("should detect multiple CommonJS export styles", () => {
@@ -244,8 +294,10 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("getUser");
-        expect(result.exports).toContain("updateUser");
+        expect(getExportNames(result)).toEqual([
+            "getUser",
+            "updateUser"
+        ]);
     });
 
     it("should not duplicate CommonJS exports", () => {
@@ -256,9 +308,9 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toEqual(["getUser"]);
+        expect(getExportNames(result)).toEqual(["getUser"]);
     });
-    
+
     it("should detect properties inside module.exports object", () => {
         const code = `
             const getUser = () => {};
@@ -273,8 +325,16 @@ describe("JavaScript Parser", () => {
         const result = parseJavaScript(code);
 
         expect(result.exports).toEqual([
-            "getUser",
-            "deleteUser"
+            {
+                name: "getUser",
+                localName: "getUser",
+                type: "function"
+            },
+            {
+                name: "deleteUser",
+                localName: "deleteUser",
+                type: "function"
+            }
         ]);
     });
 
@@ -289,8 +349,13 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("getUser");
-        expect(result.exports).not.toContain("fetchUser");
+        expect(result.exports).toEqual([
+            {
+                name: "getUser",
+                localName: "fetchUser",
+                type: "function"
+            }
+        ]);
     });
 
     it("should detect string keys inside module.exports object", () => {
@@ -303,9 +368,70 @@ describe("JavaScript Parser", () => {
 
         const result = parseJavaScript(code);
 
-        expect(result.exports).toContain("get-user");
-        expect(result.exports).toContain("delete-user");
+        expect(getExportNames(result)).toEqual([
+            "get-user",
+            "delete-user"
+        ]);
+
+        expect(result.exports[0].type).toBe("function");
+        expect(result.exports[1].type).toBe("function");
     });
 
+    it("should map ES module export aliases to local functions", () => {
+        const code = `
+            const getUser = () => {};
 
+            export {
+                getUser as fetchUser
+            };
+        `;
+
+        const result = parseJavaScript(code);
+
+        expect(result.exports).toEqual([
+            {
+                name: "fetchUser",
+                localName: "getUser",
+                type: "function"
+            }
+        ]);
+    });
+
+    it("should map CommonJS export aliases to local functions", () => {
+        const code = `
+            const getUser = () => {};
+
+            module.exports = {
+                fetchUser: getUser
+            };
+        `;
+
+        const result = parseJavaScript(code);
+
+        expect(result.exports).toEqual([
+            {
+                name: "fetchUser",
+                localName: "getUser",
+                type: "function"
+            }
+        ]);
+    });
+
+    it("should map default exports to local functions", () => {
+        const code = `
+            const getUser = () => {};
+
+            export default getUser;
+        `;
+
+        const result = parseJavaScript(code);
+
+        expect(result.exports).toEqual([
+            {
+                name: "default",
+                localName: "getUser",
+                type: "function"
+            }
+        ]);
+    });
 });
